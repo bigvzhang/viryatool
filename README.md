@@ -1,9 +1,8 @@
 # Introduction
 The following tools are used to help copy/link files.
 # Tools
-- mkln
-  - functions
-    - Link files according to a configuration file, for example create one lnk.sh, which maps my local repository to github repository, in directory /d/MyVirya
+## mkln 
+Link files according to a configuration file, for example create one lnk.sh, which maps my local repository to github repository, in directory /d/MyVirya
 ```
 #!env mkln
 /d/MyTour/VicSHTour=>./viryatour/bash
