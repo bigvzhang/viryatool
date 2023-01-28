@@ -1,0 +1,360 @@
+#!/bin/bash
+<<DOCUMENT
+NAME
+        mkln - link or copy according to the instructions in the file
+SYNOPSIS
+        1. mkln [--create|validate|rm] [-f|i|I] [InstructionFile...]
+        2. mkln -e SOURCE DEST      run directly
+           mkln -r SOURCE DEST      run directly recursively
+EXAMPLES
+        mkln == mkln . == mkln HardLinks.txt 
+		mkln (dir|cfgfile)... 
+OPTIONS
+       -f, --force
+              exec when conflicts 
+       -i     prompt what to do when conflicts
+       -I     prompt once what to do when conflicts
+       -d, --gdiff
+              run gdiff when conflicts
+DESCRIPTION
+        Syntax 1
+           If no action option specified, defaults to create.  
+           If no file option specified, defaults to HardLinks.txt. If file option
+           is a directory, the instruction file is directory/HardLinks.txt
+        Syntax 2 
+           recursively ln one diretory to another == vln -r [--force] src dest
+EXAMPLES
+    SIMPLE
+        DIRECTORY FILE                  action: ln DIRECTORY/FILE .
+                  A                     action: ln DIRECTORY/A .
+        DIRECTORY FILE  FILE2           action: ln DIRECTORY/FILE FILE2
+                  A B                   action: ln DIRECTORY/A B
+        DIRECTORYx                      action: Do nothing
+                  A B                   action: ln DIRECTORYx/A B
+        DIRECTORY -d                    action: ln DIRECTORY/* .
+                  -d A                  action: ln DIRECTORY/A/*  ./A/*
+                  -d A B                action: ln DIRECTORY/A/*  ./B/*
+                  -d A .                action: ln DIRECTORY/A/*  ./*
+        DIRECTORY -m *.js               action: ln DIRECTORY/*.js ./ 
+                  -m ud*.sh             action: ln DIRECTORY/ud*.js ./ 
+                  -m *.sh test tour     action: ln DIRECTORY/*.js ./ and rename test to tour
+        FILE                            action: ln FILE .
+    DIRECTORY MODIFICATION
+        DIR1=>DIR2 FILE                 action: ln DIR1/FILE DIR2 # DIR2 MUST EXIST
+                   A                    action: ln DIR1/A    DIR2
+    COMPOUND
+        @  DIRECTORY -name lnk.sh       for : mkln DIRECTORY/*/lnk.sh
+        @  DIRECTORY                    for : mkln DIRECTORY/*/HardLinks.txt
+        +  DIRECTORY                    call: mkln DIRECTORY/HardLinks.txt
+        +  HardLinksFILE                call: mkln HardLinksFILE
+        &  DIRECTORY A                  call: mkln -e DIRECTORY A
+        &  FILE      A                  call: mkln -e FILE      A
+        && DIRECTORY A                  call: mkln -r DIRECTORY A
+    COMPLEX:TODO
+        DIR1-> FILE                     action: ln -s DIR1/FILE . 
+                   A                    action: ln -s DIR1/A    . 
+        DIR1->DIR2 FILE                 action: ln -s DIR1/FILE DIR2 # DIR2 MUST EXIST
+                   A                    action: ln -s DIR1/A    DIR2
+        DIR1>>DIR2 FILE                 action: cp -p DIR1/FILE DIR2 # DIR2 MUST EXIST
+                   A                    action: cp -p DIR1/A    DIR2
+DOCUMENT
+
+source vcommon.sh # include functions to print document & etc.
+source vcommon_ln.sh # include functions of link 
+
+PROG_DIR=$(dirname $0)
+
+action=create
+
+function exist_dir {
+	[ -d $1 ] && return 0
+	echo "Dir:$1 does not exist!"
+	return 1
+}
+function func_lndir {
+	if [ $# -ne 2 ]; then
+		return 1
+	fi
+	exist_dir $1 || return 1 
+	exist_dir $2 || return 1 
+	ln_one_dir $1 $2
+	return 0
+}
+
+function func_mk {
+	# $1 = "cfg" 
+	local cfg
+	local src 
+	local dst 
+	local name
+	local name2
+	local file
+	local file2
+	local lines=()
+	local line
+	local array
+	local i
+	local is_document=0
+	local from
+	local to
+
+	if [ $# -eq 2 ]; then
+		#dst=$1
+		#cfg=$1/$2
+		echo "Error: func_mk <cfg>"
+		return 
+	elif [ $# -eq 1 ]; then
+		dst=.
+		cfg=$1
+	else
+		echo "func_mk: missing parameter"
+		return	
+	fi	
+	
+	if [ -f "$cfg" ]; then
+		while IFS= read -r line; do lines+=("$line"); done< <(cat "$cfg" | tr -d "\r")  
+		src=""
+		for((i=0; i<${#lines[@]}; i++)); do
+			line=${lines[i]}
+			[[ "$line" =~ ^\<\<DOCUMENT[[:space:]]*$ ]] && { is_document=1; continue; }
+			if [[ $is_document == "1" ]]; then  
+				[[ "$line" =~ ^DOCUMENT[[:space:]]*$ ]] && { is_document=0; continue; } 
+				#echo "//$line"
+				continue
+			fi
+			[[ "$line" =~ ^(.*)#         ]] && line=${BASH_REMATCH[1]}
+			[[ "$line" =~ ^[[:space:]]*$ ]] && continue
+			[[ "$line" =~ ^(@|\+|&&?)[[:space:]]*(.*) ]] && { # run for the sub-batch 
+				local flag=${BASH_REMATCH[1]} # sub-batch flag
+				line=${BASH_REMATCH[2]}
+				read -a array <<<$line
+				function echo_error_ {
+					if [[ $# -eq 0 ]]; then
+						echo "${flag}!!!configure error -- line:$((i+1)) file:$cfg"
+					else
+						echo "${flag}!!!line:$((i+1)) file:$cfg -- ${@}"
+					fi
+				}
+				function search_ {
+					local progfile_
+					local progfiles=()
+					while IFS="" read progfile_; do progfiles+=("$progfile_"); done < <(find "${array[@]}")
+					for progfile_ in "${progfiles[@]}"; do
+						echo "+===$progfile_"
+						(func_main $progfile_) # recursive
+					done
+				}
+				function run_for_one_cfg_ {
+					if   [[ ${#array[@]} -eq 1 ]]; then
+						if   [[ -d "${array[0]}" ]]; then
+							(func_main "${array[0]}/HardLinks.txt")
+						elif [[ -f "${array[0]}" ]]; then
+							(func_main "${array[0]}") 
+						else
+							echor_error_; return 1;
+						fi
+					else 
+						 echo_error_                                               
+					fi
+				}
+				function run_for_one_node_ {
+					local items=()
+					local j
+					for((j=0;j<${#array[@]};j++)); do
+						if [[ ${items[j]:0:1} == "-" ]]; then
+							echo_error_ ; return 1
+						else
+							items+=("${array[j]}")
+						fi
+					done
+					if   [[ ${#items[@]} -eq 2 ]]; then  
+						if [[ -f "${items[0]}" ]]; then
+							local src file1 dst file2
+							src=$(dirname "${items[0]}")
+							file1=$(basename "${items[0]}")
+							if [[ -f "${items[1]}" ]]; then
+								dst=$(dirname "${items[1]}")
+								file2=$(basename "${items[1]}")
+							elif [[ -d "${items[1]}" ]]; then
+								dst="${items[1]}"
+								file2=${file1}
+							elif [[ -e "${items[1]}" ]]; then
+								echo_error_ "unsupported file type: ${items[1]}"; return 1
+							else
+								dst="${items[1]}"
+								file2=$(basename $dst)
+								if [[ $file2 == $dst ]]; then
+									dst="."
+								else
+									dst=$(dirname $dst)
+									if ! [[ -d $dst ]]; then
+										if [[ -e $dst ]]; then
+											echo_error_ "$dst is required to be a directory"; return 1
+										else
+											mkdir -p $dst || return 1 # must 
+										fi
+									fi
+								fi
+							fi
+							ln_one_file_ $src $dst $file1 $file2
+						elif [[ -d "${items[0]}" ]]; then
+							if [[ $flag == '&' ]]; then
+								(ln_one_dir "${items[@]}") 
+							elif [[ $flag == '&&' ]]; then
+								(ln_one_dir__r "${items[@]}") 
+							else
+								abort "unknown flag -- $flag"
+							fi
+						else
+							if [[ -e ${items0} ]]; then
+								echo_error_ "unsupported file type: ${items[0]}"; return 1
+							else
+								echo_error_ "missing : ${items[0]}"; return 1
+							fi
+						fi
+					else 
+						echo_error_; return 1;                                                
+					fi
+				}
+				case $flag in
+				'@') echo "@===${array[@]@Q}"
+					if   [[ ${#array[@]} -eq 3 &&  ${array[1]} == "-name"  ]]; then {                                   search_; }
+					elif [[ ${#array[@]} -eq 1                             ]]; then { array+=("-name" "HardLinks.txt"); search_; }
+					else                                                              echo_error_
+					fi
+				   ;;
+				'+')echo "+===$line" 
+					run_for_one_cfg_
+				   ;;
+				'&') echo "&===$line" 
+					run_for_one_node_
+				   ;;
+				'&&')echo "&&===$line" 
+					run_for_one_node_
+				   ;;
+				esac
+
+				src=""; continue # NOTICE: clear src
+			} # end of sub-batch
+			read -a array <<<$line
+			if ! [[ "$line" =~ ^[[:space:]]+ ]]; then	# src is included; first one must be directory
+			    if [[ "${array[0]}" =~ ^(.+)=\>(.+)$ ]]; then
+					from=${BASH_REMATCH[1]}
+					to=${BASH_REMATCH[2]}
+				else
+					from=${array[0]}
+					to=${dst}
+				fi
+				if [ ${#array[@]} -eq 1 ]; then
+					continue
+				fi
+				unset array[0] && array=("${array[@]}") # shift
+			fi
+
+			if [ "${array[0]}" == "-m" ]; then
+				unset array[0] && array=("${array[@]}")
+				case ${#array[@]} in
+				0)                                       ;; # empty, ignore
+				*)  ln_one_dir $from $to "${array[@]}"   ;;
+				esac
+				continue
+			elif [ "${array[0]}" == "-d" ]; then
+				unset array[0] && array=("${array[@]}")
+				case ${#array[@]} in
+				0)  func_lndir $from $to ;;
+				1)  name=${array[0]}
+					ln_one_dir $from/$name $to/$name
+					;;
+				2)  name=${array[0]}
+					name2=${array[1]}
+					ln_one_dir $from/$name $to/$name2
+					;;
+				*)  echo "Invalid command: '$line' -- line:$((i+1)), source:$cfg, location:$PWD" 
+                    ;;
+				esac
+			else
+				case ${#array[@]} in
+				1)  file=${array[0]}
+					file2=${array[0]}
+					;;
+				2)  file=${array[0]}
+					file2=${array[1]}
+					;;
+				esac
+				ln_one_file_ "$from" "$to" "$file" "$file2"
+			fi
+		done
+	else
+		echo "File($cfg) not found!"; return 1
+	fi
+}
+
+function func_main { # call func_mk: load one cfg file and execute  
+	local DFT_FILENAME=HardLinks.txt
+	local input
+	local the_file
+	local the_dir
+	if [ $# -eq 0 ]; then
+		func_mk $DFT_FILENAME
+	else
+		for input in "$@"; do
+			if [ -d "$input" ]; then
+				if [ -f "$input/$DFT_FILENAME" ]; then
+					(cd "$input" >/dev/null && func_mk "$DFT_FILENAME" )
+				else
+					echo "$input is one directory, but doesn't contain a file named $DFT_FILENAME!"
+				fi
+			elif [ -f "$input" ]; then
+				the_file=$(basename "$input")
+				the_dir=$(dirname "$input")
+				if [ "$the_file" == "$input" ]; then
+					func_mk "$input"
+				else
+					(cd "$the_dir" &&  func_mk "$the_file")
+				fi
+			else
+				echo "mkln: config($input) not found!"; return 1
+			fi
+		done
+	fi
+}
+
+opt_express=0
+params=() # parse the args
+
+options=$(getopt -o h,i,I,f,d,r,e -l help,force,create,validate,rm,gdiff -n mkln -- "$@") || exit $? 
+		      #^^-o must be here, otherwise result is incorrect, A BUG?
+set -- $options # todo, trim arg
+function set_opt_force_ {
+	[[ -z $1 ]]         && exit 1
+	[[ -z $opt_force ]] || abort "options(-f|-i|-I) are mutually exclusive" 
+	[[ $1 == 'i' || $1 == 'I' || $1 == 'd' ]] && { tty -s || abort "error: non-interactive mode"; }  
+	opt_force=$1
+}
+for arg in "$@"; do
+	case $arg in
+	--create|--validate|--rm) action=${arg#--};;
+	-e)             opt_express=1             ;;
+	-r)             opt_express=2             ;;
+	-f|--force)     set_opt_force_  1         ;;
+	-i)             set_opt_force_ 'i'        ;;
+	-I)             set_opt_force_ 'I'        ;;
+	-d|--gdiff)     set_opt_force_ 'd'        ;;
+	-h|--help)      print_document; exit 0    ;;
+	--)                                       ;;
+	*) arg="${arg#\'}"; params+=("${arg%\'}") ;;
+	esac
+done 
+
+if [ $opt_express -eq 0 ]; then
+	func_main  "${params[@]}"
+else
+	if [ ${#params[@]} -eq 2 ]; then
+		case $opt_express in
+		1) ln_one_dir    "${params[@]}" ;;
+		2) ln_one_dir__r "${params[@]}" ;;
+		esac
+	else
+		abort "Usage: mkln -r SOURCE DEST"
+	fi
+fi
