@@ -85,7 +85,6 @@ function func_mk {
 	# $1 = "cfg" 
 	local cfg
 	local src 
-	local dst 
 	local name
 	local name2
 	local file
@@ -99,8 +98,6 @@ function func_mk {
 	local to
 
 	if [ $# -eq 2 ]; then
-		#dst=$1
-		#cfg=$1/$2
 		echo "Error: func_mk <cfg>"
 		return 
 	elif [ $# -eq 1 ]; then
@@ -161,7 +158,8 @@ function func_mk {
 					local items=()
 					local j
 					for((j=0;j<${#array[@]};j++)); do
-						if [[ ${items[j]:0:1} == "-" ]]; then
+						# we could use array directly, but the code here is to filter out some wrong configurations
+						if [[ ${array[j]:0:1} == "-" ]]; then
 							echo_error_ ; return 1
 						else
 							items+=("${array[j]}")
@@ -243,7 +241,7 @@ function func_mk {
 					to=${BASH_REMATCH[2]}
 				else
 					from=${array[0]}
-					to=${dst}
+					to="."
 				fi
 				if [ ${#array[@]} -eq 1 ]; then
 					continue
@@ -267,7 +265,11 @@ function func_mk {
 					;;
 				2)  name=${array[0]}
 					name2=${array[1]}
-					ln_one_dir $from/$name $to/$name2
+					if [[ $to == "." ]]; then
+						ln_one_dir $from/$name $name2
+					else
+						ln_one_dir $from/$name $to/$name2
+					fi
 					;;
 				*)  echo "Invalid command: '$line' -- line:$((i+1)), source:$cfg, location:$PWD" 
                     ;;
